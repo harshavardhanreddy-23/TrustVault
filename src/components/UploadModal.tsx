@@ -98,6 +98,11 @@ export const UploadModal: React.FC = () => {
 
         {/* Modal Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5 overflow-y-auto">
+          {currentUser.role === 'viewer' && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs font-medium">
+              Viewer clearance is restricted to read-only access. Only Document Owners and Administrators can upload new files.
+            </div>
+          )}
           {/* Drag & drop dropzone matching image */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}

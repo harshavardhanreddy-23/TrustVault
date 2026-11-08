@@ -12,6 +12,7 @@ import { DocumentsListView } from './components/DocumentsListView.tsx';
 import { AuditTrailView } from './components/AuditTrailView.tsx';
 import { AdminPanelView } from './components/AdminPanelView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
+import { UserManagementView } from './components/UserManagementView.tsx';
 import { SignInView } from './components/SignInView.tsx';
 import { UploadModal } from './components/UploadModal.tsx';
 import { DocumentPreviewModal } from './components/DocumentPreviewModal.tsx';
@@ -20,7 +21,7 @@ import { AccessDeniedModal } from './components/AccessDeniedModal.tsx';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 const VaultWorkspace: React.FC = () => {
-  const { isAuthenticated, activeTab, toast } = useVault();
+  const { isAuthenticated, activeTab, toast, currentUser } = useVault();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // If user is logged out, render the exact Sign In screen shown in screenshot
@@ -59,9 +60,13 @@ const VaultWorkspace: React.FC = () => {
             {activeTab === 'dashboard' && <DashboardView />}
             {activeTab === 'my_documents' && (
               <DocumentsListView
-                filterMode="my"
-                title="My Documents"
-                description="Encrypted documents owned and uploaded by your account with cryptographic retention."
+                filterMode={currentUser.role === 'admin' ? 'all' : 'my'}
+                title={currentUser.role === 'admin' ? "All Files & Centralized Records" : "My Documents"}
+                description={
+                  currentUser.role === 'admin'
+                    ? "Complete enterprise file repository with cryptographic integrity hashes and real-time permission monitoring."
+                    : "Encrypted documents owned and uploaded by your account with cryptographic retention."
+                }
               />
             )}
             {activeTab === 'shared' && (
@@ -73,6 +78,7 @@ const VaultWorkspace: React.FC = () => {
             )}
             {activeTab === 'audit_trail' && <AuditTrailView />}
             {activeTab === 'analytics' && <AdminPanelView />}
+            {activeTab === 'users' && <UserManagementView />}
             {activeTab === 'settings' && <SettingsView />}
           </div>
         </main>

@@ -1,4 +1,4 @@
-export type Role = 'owner' | 'viewer';
+export type Role = 'admin' | 'owner' | 'viewer';
 
 export interface User {
   id: string;
@@ -8,6 +8,12 @@ export interface User {
   avatarUrl?: string;
   title: string;
   department: string;
+  password?: string;
+  is_active?: number;
+  created_at?: string;
+  last_login_at?: string;
+  documents_count?: number;
+  actions_count?: number;
 }
 
 export type PermissionLevel = 'read' | 'write' | 'full';
@@ -51,7 +57,14 @@ export type AuditAction =
   | 'Viewed' 
   | 'Deleted' 
   | 'Uploaded' 
-  | 'Access Denied';
+  | 'Access Denied'
+  | 'User Registered'
+  | 'User Logged In'
+  | 'User Logged Out'
+  | 'User Activated'
+  | 'User Deactivated'
+  | 'Admin Access Blocked'
+  | 'System Initialized';
 
 export interface AuditLog {
   id: string;

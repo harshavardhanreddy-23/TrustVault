@@ -36,19 +36,39 @@ export const DocumentsListView: React.FC<DocumentsListViewProps> = ({
     deleteDocument 
   } = useVault();
 
+  const [activeScope, setActiveScope] = useState<'all' | 'my' | 'shared'>(() => {
+    if (currentUser.role === 'admin') return 'all';
+    return filterMode;
+  });
+
+  React.useEffect(() => {
+    if (currentUser.role === 'admin' && filterMode === 'my') {
+      setActiveScope('all');
+    } else {
+      setActiveScope(filterMode);
+    }
+  }, [filterMode, currentUser.role]);
+
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [activeMenuDocId, setActiveMenuDocId] = useState<string | null>(null);
 
+  const myCount = documents.filter(d => d.ownerId === currentUser.id).length;
+  const sharedCount = documents.filter(d => {
+    const isShared = d.permissions.some(p => p.userId === currentUser.id || p.userEmail?.toLowerCase() === currentUser.email?.toLowerCase());
+    return isShared && (d.ownerId !== currentUser.id || currentUser.role === 'admin');
+  }).length;
+  const allCount = documents.length;
+
   const filteredDocs = documents.filter((doc) => {
     // Mode filter
-    if (filterMode === 'my' && doc.ownerId !== currentUser.id) {
+    if (activeScope === 'my' && doc.ownerId !== currentUser.id) {
       return false;
     }
-    if (filterMode === 'shared') {
-      const isSharedToMe = doc.permissions.some(p => p.userId === currentUser.id || p.userEmail === currentUser.email);
+    if (activeScope === 'shared') {
+      const isSharedToMe = doc.permissions.some(p => p.userId === currentUser.id || p.userEmail?.toLowerCase() === currentUser.email?.toLowerCase());
       if (!isSharedToMe) return false;
-      if (doc.ownerId === currentUser.id) return false;
+      if (doc.ownerId === currentUser.id && currentUser.role !== 'admin') return false;
     }
 
     // Category filter
@@ -117,6 +137,43 @@ export const DocumentsListView: React.FC<DocumentsListViewProps> = ({
         >
           <UploadCloud className="w-4 h-4" />
           <span>Upload Document</span>
+        </button>
+      </div>
+
+      {/* Scope Selector: All Files / My Documents / Shared With Me */}
+      <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
+        <button
+          type="button"
+          onClick={() => setActiveScope('all')}
+          className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+            activeScope === 'all'
+              ? 'bg-white text-blue-700 shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          All Files ({allCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveScope('my')}
+          className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+            activeScope === 'my'
+              ? 'bg-white text-blue-700 shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          My Documents ({myCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveScope('shared')}
+          className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+            activeScope === 'shared'
+              ? 'bg-white text-blue-700 shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          Shared With Me ({sharedCount})
         </button>
       </div>
 

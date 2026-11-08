@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Shield, 
   Mail, 
@@ -11,7 +11,8 @@ import {
   ArrowRight,
   Building,
   KeyRound,
-  CheckCircle2
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
 import { useVault } from '../context/VaultContext.tsx';
 import { Role } from '../types/index.ts';
@@ -21,7 +22,15 @@ interface SignInViewProps {
 }
 
 export const SignInView: React.FC<SignInViewProps> = () => {
-  const { loginAsRole, loginWithEmail, registerUser, authViewMode, setAuthViewMode } = useVault();
+  const { 
+    loginWithEmail, 
+    registerUser, 
+    authViewMode, 
+    setAuthViewMode,
+    signupSuccessNotice,
+    setSignupSuccessNotice,
+    prefillEmail
+  } = useVault();
   const mode = authViewMode;
   const setMode = setAuthViewMode;
 
@@ -29,6 +38,13 @@ export const SignInView: React.FC<SignInViewProps> = () => {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
+
+  // Sync prefill email if coming from registration
+  useEffect(() => {
+    if (prefillEmail) {
+      setLoginEmail(prefillEmail);
+    }
+  }, [prefillEmail]);
 
   // Sign Up state - clean empty slate
   const [name, setName] = useState('');
@@ -58,20 +74,31 @@ export const SignInView: React.FC<SignInViewProps> = () => {
 
   const strength = getPasswordStrength(signupPassword);
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     if (!loginEmail.trim()) {
       setLoginError('Please enter your work email address');
       return;
     }
-    const success = loginWithEmail(loginEmail);
-    if (!success) {
-      setLoginError('Unable to sign in. Please verify your email or sign up.');
+    if (!loginPassword) {
+      setLoginError('Please enter your master password');
+      return;
+    }
+
+    const result = await loginWithEmail(loginEmail, loginPassword);
+    if (!result.success) {
+      if (result.error === 'not_found') {
+        setLoginError('No account found with this email. New users must first Sign Up before signing in.');
+      } else if (result.error === 'invalid_password') {
+        setLoginError('Incorrect password. Please verify your master password and try again.');
+      } else {
+        setLoginError(result.message || 'Unable to sign in. Please verify your credentials or sign up.');
+      }
     }
   };
 
-  const handleSignUpSubmit = (e: React.FormEvent) => {
+  const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSignupError('');
 
@@ -96,13 +123,20 @@ export const SignInView: React.FC<SignInViewProps> = () => {
       return;
     }
 
-    registerUser({
+    const result = await registerUser({
       name: name.trim(),
       email: signupEmail.trim(),
       role: selectedRole,
       department: department,
       password: signupPassword
     });
+
+    if (!result.success) {
+      setSignupError(result.message || 'Unable to register user.');
+    } else {
+      setSignupPassword('');
+      setConfirmPassword('');
+    }
   };
 
   return (
@@ -218,9 +252,40 @@ export const SignInView: React.FC<SignInViewProps> = () => {
                   </p>
                 </div>
 
+                {/* Account creation success banner */}
+                {signupSuccessNotice && (
+                  <div className="mb-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2.5 animate-in fade-in">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-semibold text-emerald-950 leading-snug">{signupSuccessNotice}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Login error banner with direct Sign Up CTA */}
                 {loginError && (
-                  <div className="mb-4 p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">
-                    {loginError}
+                  <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium space-y-2 animate-in fade-in">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <p className="leading-snug">{loginError}</p>
+                    </div>
+                    {loginError.includes('Sign Up') && (
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSignupError('');
+                            setLoginError('');
+                            setSignupEmail(loginEmail);
+                            setMode('signup');
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+                        >
+                          <span>Enroll New Account (Sign Up)</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -285,7 +350,7 @@ export const SignInView: React.FC<SignInViewProps> = () => {
                     </button>
                   </div>
 
-                  {/* Login Button */}
+                  {/* Login Button matching screenshot */}
                   <button
                     type="submit"
                     className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-blue-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer mt-1"
@@ -295,8 +360,57 @@ export const SignInView: React.FC<SignInViewProps> = () => {
                   </button>
                 </form>
 
+                {/* 'or' quick role buttons matching screenshot */}
+                <div className="relative my-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-slate-200" />
+                  </div>
+                  <div className="relative flex justify-center text-xs">
+                    <span className="px-2 bg-white text-slate-400 font-medium">or</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginEmail('harshavdugga@gmail.com');
+                      setLoginPassword('Harsha@1122');
+                      setLoginError('');
+                    }}
+                    className="flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <Shield className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Admin</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginEmail('owner@trustvault.internal');
+                      setLoginPassword('Owner@TrustVault2026!');
+                      setLoginError('');
+                    }}
+                    className="flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <UserIcon className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Owner</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginEmail('viewer@trustvault.internal');
+                      setLoginPassword('Viewer@TrustVault2026!');
+                      setLoginError('');
+                    }}
+                    className="flex items-center justify-center gap-1.5 py-2 px-2 rounded-xl text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors cursor-pointer shadow-2xs"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-purple-600" />
+                    <span>Viewer</span>
+                  </button>
+                </div>
+
                 {/* Switch link */}
-                <div className="mt-6 text-center text-xs text-slate-500">
+                <div className="mt-5 text-center text-xs text-slate-500">
                   Don't have an enterprise account?{' '}
                   <button
                     type="button"
@@ -320,8 +434,28 @@ export const SignInView: React.FC<SignInViewProps> = () => {
                 </div>
 
                 {signupError && (
-                  <div className="mb-4 p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">
-                    {signupError}
+                  <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium space-y-2 animate-in fade-in">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <p className="leading-snug">{signupError}</p>
+                    </div>
+                    {signupError.includes('already registered') && (
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLoginEmail(signupEmail);
+                            setLoginError('');
+                            setSignupError('');
+                            setMode('signin');
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+                        >
+                          <span>Go to Login</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 

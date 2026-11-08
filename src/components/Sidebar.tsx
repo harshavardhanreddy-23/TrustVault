@@ -19,13 +19,29 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ onCloseMobile }) => {
   const { activeTab, setActiveTab, logout, currentUser, loginAsRole } = useVault();
 
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'my_documents', label: 'My Documents', icon: Files },
-    { id: 'shared', label: 'Shared With Me', icon: Users2 },
-    { id: 'audit_trail', label: 'Audit Logs', icon: Clock3 },
-    { id: 'settings', label: 'Settings', icon: Settings },
-  ] as const;
+  // Role-based navigation items
+  const navItems = currentUser.role === 'admin'
+    ? [
+        { id: 'analytics' as const, label: 'Admin Dashboard', icon: ShieldAlert },
+        { id: 'users' as const, label: 'User Management', icon: Users2 },
+        { id: 'my_documents' as const, label: 'All Files', icon: Files },
+        { id: 'audit_trail' as const, label: 'Audit Logs', icon: Clock3 },
+        { id: 'settings' as const, label: 'Settings', icon: Settings },
+      ]
+    : currentUser.role === 'owner'
+    ? [
+        { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'my_documents' as const, label: 'My Documents', icon: Files },
+        { id: 'shared' as const, label: 'Shared With Me', icon: Users2 },
+        { id: 'audit_trail' as const, label: 'Audit Logs', icon: Clock3 },
+        { id: 'settings' as const, label: 'Settings', icon: Settings },
+      ]
+    : [
+        { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'shared' as const, label: 'Shared With Me', icon: Users2 },
+        { id: 'audit_trail' as const, label: 'Audit Logs', icon: Clock3 },
+        { id: 'settings' as const, label: 'Settings', icon: Settings },
+      ];
 
   const handleNavClick = (id: typeof activeTab) => {
     setActiveTab(id);

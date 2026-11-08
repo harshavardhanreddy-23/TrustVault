@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { 
   User, 
   Role, 
@@ -8,13 +8,7 @@ import {
   DocCategory,
   SecurityThreat
 } from '../types/index.ts';
-import { 
-  INITIAL_DOCUMENTS, 
-  INITIAL_AUDIT_LOGS,
-  SAMPLE_DOCUMENTS,
-  SAMPLE_AUDIT_LOGS,
-  SECURITY_THREATS
-} from '../data/mockData.ts';
+import { SECURITY_THREATS } from '../data/mockData.ts';
 
 interface AccessDeniedInfo {
   isOpen: boolean;
@@ -22,11 +16,28 @@ interface AccessDeniedInfo {
   reason?: string;
 }
 
+export interface LoginResult {
+  success: boolean;
+  error?: 'not_found' | 'invalid_password' | 'missing_fields' | 'forbidden' | 'server_error';
+  message?: string;
+  user?: User;
+}
+
+export interface RegisterResult {
+  success: boolean;
+  message?: string;
+}
+
 interface VaultContextType {
   currentUser: User;
   isAuthenticated: boolean;
   registeredUsers: User[];
-  activeTab: 'dashboard' | 'my_documents' | 'shared' | 'audit_trail' | 'analytics' | 'settings';
+  adminUsers: User[];
+  signupSuccessNotice: string | null;
+  setSignupSuccessNotice: (notice: string | null) => void;
+  prefillEmail: string;
+  setPrefillEmail: (email: string) => void;
+  activeTab: 'dashboard' | 'my_documents' | 'shared' | 'audit_trail' | 'analytics' | 'users' | 'settings';
   documents: DocumentItem[];
   auditLogs: AuditLog[];
   threats: SecurityThreat[];
@@ -39,21 +50,23 @@ interface VaultContextType {
   clearAllData: () => void;
   loadSampleData: () => void;
   
-  // Actions
-  setActiveTab: (tab: 'dashboard' | 'my_documents' | 'shared' | 'audit_trail' | 'analytics' | 'settings') => void;
+  // Navigation & filtering
+  setActiveTab: (tab: 'dashboard' | 'my_documents' | 'shared' | 'audit_trail' | 'analytics' | 'users' | 'settings') => void;
   setSearchQuery: (query: string) => void;
   loginAsRole: (role: Role) => void;
-  loginWithEmail: (email: string) => boolean;
+  loginWithEmail: (email: string, password?: string) => Promise<LoginResult>;
   registerUser: (params: {
     name: string;
     email: string;
     role: Role;
     department: string;
     password?: string;
-  }) => boolean;
+  }) => Promise<RegisterResult>;
   authViewMode: 'signin' | 'signup';
   setAuthViewMode: (mode: 'signin' | 'signup') => void;
   logout: (targetMode?: 'signin' | 'signup') => void;
+  
+  // Modals & Inspection
   openUploadModal: () => void;
   closeUploadModal: () => void;
   openPreviewDoc: (doc: DocumentItem) => void;
@@ -63,18 +76,23 @@ interface VaultContextType {
   closeAccessDenied: () => void;
   showAccessDenied: (documentName: string, reason?: string) => void;
   
-  // Document actions
+  // Document Operations
   uploadDocument: (newDoc: {
     name: string;
     category: DocCategory;
     size?: string;
     permissions: DocumentPermission[];
-  }) => void;
-  downloadDocument: (doc: DocumentItem) => void;
-  deleteDocument: (doc: DocumentItem) => void;
-  updatePermissions: (docId: string, permissions: DocumentPermission[]) => void;
+  }) => Promise<void>;
+  downloadDocument: (doc: DocumentItem) => Promise<void>;
+  deleteDocument: (doc: DocumentItem) => Promise<void>;
+  updatePermissions: (docId: string, permissions: DocumentPermission[]) => Promise<void>;
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   simulateSecurityTest: (threat: SecurityThreat) => void;
+
+  // Super Administrator Operations
+  fetchAdminUsers: () => Promise<void>;
+  toggleUserStatus: (userId: string) => Promise<void>;
+  refreshAllData: () => Promise<void>;
 }
 
 const DEFAULT_USER: User = {
@@ -89,13 +107,19 @@ const DEFAULT_USER: User = {
 const VaultContext = createContext<VaultContextType | undefined>(undefined);
 
 export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [registeredUsers, setRegisteredUsers] = useState<User[]>([]);
+  const [token, setToken] = useState<string | null>(() => {
+    return localStorage.getItem('trustvault_token') || null;
+  });
+
+  const [signupSuccessNotice, setSignupSuccessNotice] = useState<string | null>(null);
+  const [prefillEmail, setPrefillEmail] = useState<string>('');
   const [currentUser, setCurrentUser] = useState<User>(DEFAULT_USER);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [authViewMode, setAuthViewMode] = useState<'signin' | 'signup'>('signin');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'my_documents' | 'shared' | 'audit_trail' | 'analytics' | 'settings'>('dashboard');
-  const [documents, setDocuments] = useState<DocumentItem[]>(INITIAL_DOCUMENTS);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(INITIAL_AUDIT_LOGS);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'my_documents' | 'shared' | 'audit_trail' | 'analytics' | 'users' | 'settings'>('dashboard');
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [adminUsers, setAdminUsers] = useState<User[]>([]);
   const [threats] = useState<SecurityThreat[]>(SECURITY_THREATS);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<DocumentItem | null>(null);
@@ -104,175 +128,364 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
     setTimeout(() => {
       setToast(prev => (prev?.message === message ? null : prev));
-    }, 3800);
-  };
+    }, 4000);
+  }, []);
 
-  const addAuditLog = (
-    action: AuditLog['action'], 
-    docName: string, 
-    details: string, 
-    docId: string = 'doc_ref',
-    status: AuditLog['status'] = 'success'
-  ) => {
-    const now = new Date();
-    const formattedDate = now.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }) + ' ' + now.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
-
-    const newLog: AuditLog = {
-      id: `log_${Date.now()}`,
-      timestamp: formattedDate,
-      userId: currentUser.id,
-      userName: currentUser.name,
-      action,
-      documentId: docId,
-      documentName: docName,
-      ipAddress: '127.0.0.1',
-      details,
-      status,
-      signatureHash: Math.random().toString(16).substring(2, 10) + '...' + Math.random().toString(16).substring(2, 6)
+  const getAuthHeaders = useCallback(() => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
     };
+    const activeToken = token || localStorage.getItem('trustvault_token');
+    if (activeToken) {
+      headers['Authorization'] = `Bearer ${activeToken}`;
+    }
+    return headers;
+  }, [token]);
 
-    setAuditLogs(prev => [newLog, ...prev]);
-  };
+  // Fetch Documents from server
+  const fetchDocuments = useCallback(async (search?: string) => {
+    try {
+      const activeToken = token || localStorage.getItem('trustvault_token');
+      if (!activeToken) return;
 
-  const checkUserCanAccess = (doc: DocumentItem, requiredLevel: 'read' | 'write' | 'full' = 'read'): boolean => {
-    // Direct document owner has full access
-    if (doc.ownerId === currentUser.id) return true;
+      const url = new URL('/api/documents', window.location.origin);
+      if (search !== undefined && search.trim() !== '') {
+        url.searchParams.set('search', search.trim());
+      }
 
-    // Access strictly restricted to owner's explicit choice
-    const perm = doc.permissions.find(p => p.userId === currentUser.id || p.userEmail === currentUser.email);
-    if (!perm) return false;
+      const res = await fetch(url.toString(), {
+        headers: getAuthHeaders()
+      });
 
-    if (requiredLevel === 'read') return true;
-    if (requiredLevel === 'write') return perm.level === 'write' || perm.level === 'full';
-    if (requiredLevel === 'full') return perm.level === 'full';
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.documents)) {
+          const mapped: DocumentItem[] = data.documents.map((d: any) => ({
+            id: d.id,
+            name: d.name,
+            type: d.type || 'pdf',
+            size: d.size || '3.4 MB',
+            sizeBytes: d.size_bytes || 3565158,
+            category: d.category || 'Reports',
+            ownerId: d.owner_id,
+            ownerName: d.owner_name,
+            ownerAvatar: d.owner_id === 'user_superadmin' ? undefined : undefined,
+            createdAt: d.created_at,
+            updatedAt: d.updated_at || 'Just now',
+            downloadsCount: d.downloads_count || 0,
+            viewsCount: d.views_count || 0,
+            hash: d.hash,
+            fileSummary: d.file_summary,
+            permissions: (d.permissions || []).map((p: any) => ({
+              userId: p.user_id,
+              userName: p.user_name,
+              userEmail: p.user_email,
+              role: (p.level === 'full' ? 'owner' : 'viewer') as Role,
+              level: p.level,
+              grantedAt: p.granted_at || 'Just now'
+            }))
+          }));
+          setDocuments(mapped);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch documents:', err);
+    }
+  }, [getAuthHeaders, token]);
 
-    return false;
-  };
+  // Fetch Audit Logs from server
+  const fetchAuditLogs = useCallback(async () => {
+    try {
+      const activeToken = token || localStorage.getItem('trustvault_token');
+      if (!activeToken) return;
 
-  const loginAsRole = (role: Role) => {
-    setCurrentUser(prev => ({
-      ...prev,
-      role: role
-    }));
-    setIsAuthenticated(true);
-    setAccessDeniedInfo({ isOpen: false });
-    showToast(`Active clearance updated to ${role.toUpperCase()}`, 'info');
-  };
+      const res = await fetch('/api/audit-logs?limit=200', {
+        headers: getAuthHeaders()
+      });
 
-  const loginWithEmail = (email: string): boolean => {
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.auditLogs)) {
+          const mapped: AuditLog[] = data.auditLogs.map((l: any) => ({
+            id: l.id,
+            timestamp: l.timestamp,
+            userId: l.user_id || 'anonymous',
+            userName: l.user_name,
+            action: l.action,
+            documentId: l.document_id || '',
+            documentName: l.document_name || '-',
+            ipAddress: l.ip_address || '127.0.0.1',
+            details: l.details || '-',
+            status: l.status,
+            signatureHash: l.signature_hash
+          }));
+          setAuditLogs(mapped);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch audit logs:', err);
+    }
+  }, [getAuthHeaders, token]);
+
+  // Fetch Admin Users list
+  const fetchAdminUsers = useCallback(async () => {
+    try {
+      const activeToken = token || localStorage.getItem('trustvault_token');
+      if (!activeToken) return;
+
+      const res = await fetch('/api/admin/users', {
+        headers: getAuthHeaders()
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.users)) {
+          setAdminUsers(data.users);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch admin users:', err);
+    }
+  }, [getAuthHeaders, token]);
+
+  const refreshAllData = useCallback(async () => {
+    await Promise.all([
+      fetchDocuments(searchQuery),
+      fetchAuditLogs(),
+      fetchAdminUsers()
+    ]);
+  }, [fetchDocuments, fetchAuditLogs, fetchAdminUsers, searchQuery]);
+
+  // Debounced search trigger
+  useEffect(() => {
+    if (isAuthenticated) {
+      const timer = setTimeout(() => {
+        fetchDocuments(searchQuery);
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [searchQuery, isAuthenticated, fetchDocuments]);
+
+  // On mount: check token validity with /api/auth/me
+  useEffect(() => {
+    const savedToken = localStorage.getItem('trustvault_token');
+    if (!savedToken) return;
+
+    fetch('/api/auth/me', {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${savedToken}`
+      }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.user) {
+          setCurrentUser(data.user);
+          setIsAuthenticated(true);
+          setToken(savedToken);
+          // Auto-navigate Super Admin to Analytics / Dashboard
+          if (data.user.role === 'admin') {
+            setActiveTab('analytics');
+          } else {
+            setActiveTab('dashboard');
+          }
+        } else {
+          localStorage.removeItem('trustvault_token');
+          setToken(null);
+          setIsAuthenticated(false);
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem('trustvault_token');
+        setToken(null);
+        setIsAuthenticated(false);
+      });
+  }, []);
+
+  // When authenticated, refresh documents and audit logs
+  useEffect(() => {
+    if (isAuthenticated && token) {
+      refreshAllData();
+    }
+  }, [isAuthenticated, token, refreshAllData]);
+
+  // Login With Email against backend REST API
+  const loginWithEmail = async (email: string, password?: string): Promise<LoginResult> => {
     const trimmed = email.toLowerCase().trim();
     if (!trimmed) {
       showToast('Please enter your work email address', 'error');
-      return false;
+      return { success: false, error: 'missing_fields', message: 'Please enter your work email address.' };
     }
-    const found = registeredUsers.find(u => u.email.toLowerCase() === trimmed);
-    if (found) {
-      setCurrentUser(found);
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmed, password: password || '' })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        showToast(data.message || 'Unable to log in.', 'error');
+        return {
+          success: false,
+          error: res.status === 401 ? (data.message.includes('Password') ? 'invalid_password' : 'not_found') : 'forbidden',
+          message: data.message
+        };
+      }
+
+      // Successful login
+      localStorage.setItem('trustvault_token', data.token);
+      setToken(data.token);
+      setCurrentUser(data.user);
       setIsAuthenticated(true);
-      showToast(`Welcome back, ${found.name}!`, 'success');
-      return true;
+      setSignupSuccessNotice(null);
+      setAccessDeniedInfo({ isOpen: false });
+
+      // Role-Based Redirection:
+      // Administrator is automatically redirected to the administrative dashboard
+      if (data.user.role === 'admin') {
+        setActiveTab('analytics');
+        showToast(`Welcome Super Administrator! Accessing centralized security dashboard.`, 'success');
+      } else {
+        setActiveTab('dashboard');
+        showToast(`Welcome back, ${data.user.name}! Authenticated with ${data.user.role.toUpperCase()} clearance.`, 'success');
+      }
+
+      return {
+        success: true,
+        user: data.user
+      };
+    } catch (err) {
+      console.error('Login request failed:', err);
+      showToast('Network error during login. Please try again.', 'error');
+      return {
+        success: false,
+        error: 'server_error',
+        message: 'Network communication failure. Please check server.'
+      };
     }
-
-    // Generate user profile from email input
-    const formattedName = trimmed.split('@')[0]
-      .replace(/[._-]/g, ' ')
-      .split(' ')
-      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(' ') || 'Workspace Member';
-
-    const newUser: User = {
-      id: `user_${Date.now()}`,
-      name: formattedName,
-      email: trimmed,
-      role: 'owner',
-      title: 'Document Owner',
-      department: 'Core Operations'
-    };
-    setRegisteredUsers(prev => [newUser, ...prev]);
-    setCurrentUser(newUser);
-    setIsAuthenticated(true);
-    showToast(`Signed in as ${newUser.name}`, 'success');
-    return true;
   };
 
-  const registerUser = (params: {
+  // Register User against backend REST API with duplicate rejection
+  const registerUser = async (params: {
     name: string;
     email: string;
     role: Role;
     department: string;
     password?: string;
-  }): boolean => {
-    const newUser: User = {
-      id: `user_${Date.now()}`,
-      name: params.name.trim(),
-      email: params.email.trim().toLowerCase(),
-      role: params.role,
-      title: `${params.department} Specialist`,
-      department: params.department
-    };
-    setRegisteredUsers(prev => [newUser, ...prev]);
-    setCurrentUser(newUser);
-    setIsAuthenticated(true);
-    setAccessDeniedInfo({ isOpen: false });
-    addAuditLog('Uploaded', 'User Credentials', `Enrolled account: ${params.name} (${params.role.toUpperCase()}) in ${params.department}`, 'auth_reg', 'success');
-    showToast(`Account created for ${params.name}. Logged in as ${params.role.toUpperCase()}.`, 'success');
-    return true;
+  }): Promise<RegisterResult> => {
+    const trimmedEmail = params.email.trim().toLowerCase();
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: params.name.trim(),
+          email: trimmedEmail,
+          role: params.role,
+          department: params.department,
+          password: params.password
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        showToast(data.message || 'Registration failed.', 'error');
+        return {
+          success: false,
+          message: data.message
+        };
+      }
+
+      // Successful registration: redirect to login page as specified in Section 1
+      setPrefillEmail(trimmedEmail);
+      setSignupSuccessNotice(`Account registered successfully with ${data.role?.toUpperCase() || 'OWNER'} clearance! Please log in.`);
+      setAuthViewMode('signin');
+      showToast(`Account created for ${params.name}. Please log in.`, 'success');
+
+      return {
+        success: true,
+        message: data.message
+      };
+    } catch (err) {
+      console.error('Registration failed:', err);
+      showToast('Network error during registration.', 'error');
+      return {
+        success: false,
+        message: 'Network failure during registration.'
+      };
+    }
   };
 
-  const logout = (targetMode: 'signin' | 'signup' = 'signin') => {
-    setAuthViewMode(targetMode);
-    setIsAuthenticated(false);
-    showToast(targetMode === 'signup' ? 'Workspace ready for new user registration.' : 'Secure session invalidated and token revoked.', 'info');
+  const logout = async (targetMode: 'signin' | 'signup' = 'signin') => {
+    try {
+      const activeToken = token || localStorage.getItem('trustvault_token');
+      if (activeToken) {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: getAuthHeaders()
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      localStorage.removeItem('trustvault_token');
+      setToken(null);
+      setIsAuthenticated(false);
+      setAuthViewMode(targetMode);
+      setSignupSuccessNotice(null);
+      showToast(targetMode === 'signup' ? 'Ready to register new user.' : 'Session invalidated. Logged out.', 'info');
+    }
+  };
+
+  const loginAsRole = (role: Role) => {
+    // Quick demo switch
+    if (role === 'admin') {
+      loginWithEmail('harshavdugga@gmail.com', 'Harsha@1122');
+    } else if (role === 'viewer') {
+      loginWithEmail('viewer@trustvault.internal', 'Viewer@TrustVault2026!');
+    } else {
+      loginWithEmail('owner@trustvault.internal', 'Owner@TrustVault2026!');
+    }
   };
 
   const openUploadModal = () => setIsUploadModalOpen(true);
   const closeUploadModal = () => setIsUploadModalOpen(false);
 
   const openPreviewDoc = (doc: DocumentItem) => {
-    if (!checkUserCanAccess(doc, 'read')) {
-      addAuditLog('Access Denied', doc.name, `Unauthorized Read attempt by ${currentUser.name} (${currentUser.role})`, doc.id, 'blocked');
-      setAccessDeniedInfo({
-        isOpen: true,
-        documentName: doc.name,
-        reason: `Your account (${currentUser.name} - ${currentUser.role.toUpperCase()}) does not have clearance to view this document.`
-      });
+    // Check access
+    const isOwner = doc.ownerId === currentUser.id;
+    const hasPerm = doc.permissions.some(p => p.userId === currentUser.id || p.userEmail?.toLowerCase() === currentUser.email?.toLowerCase());
+    const isAdmin = currentUser.role === 'admin';
+
+    if (!isOwner && !hasPerm && !isAdmin) {
+      showAccessDenied(doc.name, `Your account (${currentUser.name} - ${currentUser.role.toUpperCase()}) does not have clearance to view this document.`);
       return;
     }
 
     setPreviewDoc(doc);
     setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, viewsCount: d.viewsCount + 1 } : d));
-    addAuditLog('Viewed', doc.name, '-', doc.id, 'success');
   };
 
   const closePreviewDoc = () => setPreviewDoc(null);
 
   const openPermissionsModal = (doc: DocumentItem) => {
-    if (!checkUserCanAccess(doc, 'full')) {
-      addAuditLog('Access Denied', doc.name, `Permission edit attempt rejected for ${currentUser.name}`, doc.id, 'blocked');
-      setAccessDeniedInfo({
-        isOpen: true,
-        documentName: doc.name,
-        reason: 'Access strictly limited to owner choice: Only the Document Owner can manage permissions.'
-      });
+    if (doc.ownerId !== currentUser.id && currentUser.role !== 'admin') {
+      showAccessDenied(doc.name, 'Access strictly limited to owner choice: Only the Document Owner can manage permissions.');
       return;
     }
     setPermissionsModalDoc(doc);
   };
 
   const closePermissionsModal = () => setPermissionsModalDoc(null);
-
   const closeAccessDenied = () => setAccessDeniedInfo({ isOpen: false });
 
   const showAccessDenied = (documentName: string, reason?: string) => {
@@ -283,130 +496,162 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   };
 
-  const uploadDocument = (newDoc: {
+  const uploadDocument = async (newDoc: {
     name: string;
     category: DocCategory;
     size?: string;
     permissions: DocumentPermission[];
   }) => {
-    const ext = newDoc.name.split('.').pop()?.toLowerCase();
-    const docType: DocumentItem['type'] = 
-      ext === 'pdf' ? 'pdf' : 
-      ext === 'xlsx' || ext === 'xls' ? 'xlsx' : 
-      ext === 'docx' || ext === 'doc' ? 'docx' : 'pdf';
-
-    const created: DocumentItem = {
-      id: `doc_${Date.now()}`,
-      name: newDoc.name,
-      type: docType,
-      size: newDoc.size || '3.4 MB',
-      sizeBytes: 3565158,
-      category: newDoc.category,
-      ownerId: currentUser.id,
-      ownerName: currentUser.name,
-      ownerAvatar: currentUser.avatarUrl,
-      createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      updatedAt: 'Just now',
-      downloadsCount: 0,
-      viewsCount: 1,
-      hash: Math.random().toString(16).substring(2) + Math.random().toString(16).substring(2),
-      fileSummary: `Securely encrypted document uploaded under category: ${newDoc.category}. Encrypted with envelope key derivation.`,
-      permissions: [
-        {
-          userId: currentUser.id,
-          userName: currentUser.name,
-          userEmail: currentUser.email,
-          role: currentUser.role,
-          level: 'full',
-          grantedAt: 'Just now'
-        },
-        ...newDoc.permissions
-      ]
-    };
-
-    setDocuments(prev => [created, ...prev]);
-    setIsUploadModalOpen(false);
-    addAuditLog('Uploaded', created.name, '-', created.id, 'success');
-    showToast(`"${created.name}" uploaded successfully with encrypted ACLs.`, 'success');
-  };
-
-  const downloadDocument = (doc: DocumentItem) => {
-    if (!checkUserCanAccess(doc, 'read')) {
-      addAuditLog('Access Denied', doc.name, `Unauthorized Download attempt by ${currentUser.name}`, doc.id, 'blocked');
-      setAccessDeniedInfo({
-        isOpen: true,
-        documentName: doc.name,
-        reason: 'You do not have permission to download this document.'
+    try {
+      const res = await fetch('/api/documents/upload', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          name: newDoc.name,
+          category: newDoc.category,
+          size: newDoc.size || '3.5 MB',
+          permissions: newDoc.permissions.map(p => ({
+            userEmail: p.userEmail,
+            level: p.level
+          }))
+        })
       });
-      return;
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        if (res.status === 403) {
+          showAccessDenied(newDoc.name, data.message || 'Viewer accounts do not have upload privileges.');
+        } else {
+          showToast(data.message || 'Upload failed.', 'error');
+        }
+        return;
+      }
+
+      setIsUploadModalOpen(false);
+      showToast(`"${newDoc.name}" uploaded successfully with encrypted ACLs.`, 'success');
+      await refreshAllData();
+    } catch (err) {
+      console.error('Upload error:', err);
+      showToast('Network error during upload.', 'error');
     }
-
-    setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, downloadsCount: d.downloadsCount + 1 } : d));
-    addAuditLog('Downloaded', doc.name, 'IP: 127.0.0.1', doc.id, 'success');
-
-    // Create a client-side simulated blob file download
-    const blobContent = `TrustVault Verified Document\nTitle: ${doc.name}\nOwner: ${doc.ownerName}\nClassification: ${doc.category}\nSHA-256 Hash: ${doc.hash}\nDownloaded At: ${new Date().toISOString()}\nUser: ${currentUser.name} (${currentUser.email})\n\n-- Content preview --\n${doc.fileSummary || 'Official confidential document archive.'}`;
-    const blob = new Blob([blobContent], { type: 'text/plain;charset=utf-8' });
-    const downloadUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = doc.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(downloadUrl);
-
-    showToast(`Downloaded "${doc.name}" (Audit log recorded)`, 'success');
   };
 
-  const deleteDocument = (doc: DocumentItem) => {
-    if (!checkUserCanAccess(doc, 'full')) {
-      addAuditLog('Access Denied', doc.name, `Unauthorized Delete attempt by ${currentUser.name}`, doc.id, 'blocked');
-      setAccessDeniedInfo({
-        isOpen: true,
-        documentName: doc.name,
-        reason: 'Access strictly limited to owner choice: Only the Document Owner has deletion privileges.'
+  const downloadDocument = async (doc: DocumentItem) => {
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/download`, {
+        headers: getAuthHeaders()
       });
-      return;
-    }
 
-    setDocuments(prev => prev.filter(d => d.id !== doc.id));
-    if (previewDoc?.id === doc.id) setPreviewDoc(null);
-    if (permissionsModalDoc?.id === doc.id) setPermissionsModalDoc(null);
-    
-    addAuditLog('Deleted', doc.name, '-', doc.id, 'warning');
-    showToast(`Document "${doc.name}" was permanently purged.`, 'info');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        showAccessDenied(doc.name, errorData.message || 'You do not have permission to download this document.');
+        await fetchAuditLogs();
+        return;
+      }
+
+      // Download file blob
+      const textBlob = await res.blob();
+      const downloadUrl = URL.createObjectURL(textBlob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = doc.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(downloadUrl);
+
+      showToast(`Downloaded "${doc.name}" (Audit log recorded)`, 'success');
+      setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, downloadsCount: d.downloadsCount + 1 } : d));
+      await fetchAuditLogs();
+    } catch (err) {
+      console.error('Download error:', err);
+      showToast('Network error during download.', 'error');
+    }
   };
 
-  const updatePermissions = (docId: string, updatedPerms: DocumentPermission[]) => {
-    const doc = documents.find(d => d.id === docId);
-    if (!doc) return;
+  const deleteDocument = async (doc: DocumentItem) => {
+    try {
+      const res = await fetch(`/api/documents/${doc.id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
 
-    if (!checkUserCanAccess(doc, 'full')) {
-      showToast('Permission denied: You cannot alter ACLs for this file.', 'error');
-      return;
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showAccessDenied(doc.name, data.message || 'Only the Document Owner can delete this document.');
+        return;
+      }
+
+      if (previewDoc?.id === doc.id) setPreviewDoc(null);
+      if (permissionsModalDoc?.id === doc.id) setPermissionsModalDoc(null);
+
+      showToast(`Document "${doc.name}" was permanently purged.`, 'info');
+      await refreshAllData();
+    } catch (err) {
+      console.error('Delete error:', err);
+      showToast('Network error during deletion.', 'error');
     }
+  };
 
-    setDocuments(prev => prev.map(d => d.id === docId ? { ...d, permissions: updatedPerms, updatedAt: 'Just now' } : d));
-    
-    const latestUser = updatedPerms[updatedPerms.length - 1];
-    const details = latestUser ? `Granted: ${latestUser.userName} (${latestUser.level.toUpperCase()})` : 'ACLs updated';
+  const updatePermissions = async (docId: string, permissions: DocumentPermission[]) => {
+    try {
+      const res = await fetch(`/api/documents/${docId}/permissions`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          permissions: permissions.map(p => ({
+            userEmail: p.userEmail,
+            level: p.level
+          }))
+        })
+      });
 
-    addAuditLog('Permissions Changed', doc.name, details, doc.id, 'success');
-    setPermissionsModalDoc(null);
-    showToast(`Access rules updated for "${doc.name}"`, 'success');
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showToast(data.message || 'Failed to update permissions.', 'error');
+        return;
+      }
+
+      setPermissionsModalDoc(null);
+      showToast('Access rules updated and applied immediately.', 'success');
+      await refreshAllData();
+    } catch (err) {
+      console.error('Update permissions error:', err);
+      showToast('Network error updating permissions.', 'error');
+    }
+  };
+
+  const toggleUserStatus = async (userId: string) => {
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/toggle-status`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showToast(data.message || 'Failed to change user status.', 'error');
+        return;
+      }
+
+      showToast(data.message, 'success');
+      await fetchAdminUsers();
+      await fetchAuditLogs();
+    } catch (err) {
+      console.error('Toggle status error:', err);
+      showToast('Network error during user status update.', 'error');
+    }
   };
 
   const simulateSecurityTest = (threat: SecurityThreat) => {
     if (threat.simKey === 'direct_url') {
       showAccessDenied('Restricted_System_Core.enc', 'Simulated Direct URL Bypass intercepted by Server Route Guard!');
-      addAuditLog('Access Denied', 'Restricted_System_Core.enc', 'Simulated unauthorized URL access blocked by middleware', 'sec_sim_1', 'blocked');
     } else if (threat.simKey === 'privilege_escalation') {
       showToast('Owner-Choice Test: Zero admin bypass. Only collaborators explicitly granted by the document owner can access files.', 'success');
     } else if (threat.simKey === 'token_theft') {
       showToast('Simulating Token Rotation: Current ephemeral bearer session rotated. Re-authenticated.', 'info');
     } else if (threat.simKey === 'audit_tamper') {
-      showToast('Audit Log Immutability check: Write-once SQLite/Postgres hash integrity verified. Zero mutation allowed.', 'success');
+      showToast('Audit Log Immutability check: Write-once SQLite hash integrity verified. Zero mutation allowed.', 'success');
     } else if (threat.simKey === 'malware_upload') {
       showToast('Malware Upload simulation: MIME type signature checks rejected illegal .exe/.sh scripts.', 'success');
     }
@@ -415,13 +660,12 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const clearAllData = () => {
     setDocuments([]);
     setAuditLogs([]);
-    showToast('All sample data and dates removed. Clean vault initialized.', 'info');
+    showToast('Document cache refreshed.', 'info');
   };
 
   const loadSampleData = () => {
-    setDocuments(SAMPLE_DOCUMENTS);
-    setAuditLogs(SAMPLE_AUDIT_LOGS);
-    showToast('Loaded sample documents with dynamic current dates.', 'success');
+    refreshAllData();
+    showToast('Loaded synchronized database documents and audit log records.', 'success');
   };
 
   return (
@@ -429,7 +673,12 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       value={{
         currentUser,
         isAuthenticated,
-        registeredUsers,
+        registeredUsers: adminUsers,
+        adminUsers,
+        signupSuccessNotice,
+        setSignupSuccessNotice,
+        prefillEmail,
+        setPrefillEmail,
         activeTab,
         documents,
         auditLogs,
@@ -463,7 +712,10 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         deleteDocument,
         updatePermissions,
         showToast,
-        simulateSecurityTest
+        simulateSecurityTest,
+        fetchAdminUsers,
+        toggleUserStatus,
+        refreshAllData
       }}
     >
       {children}
